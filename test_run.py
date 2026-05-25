@@ -1,4 +1,4 @@
-# test_run.py — Creates 5 different test CHG reports, no API needed
+# test_run.py — Creates 5 test CHG reports AND ingests them into FAISS RAG
 import json
 import os
 from datetime import datetime
@@ -10,7 +10,7 @@ def save_report(report):
     filename = f"reports/report_{chg}_{ts}.json"
     with open(filename, "w") as f:
         json.dump(report, f, indent=2)
-    print(f"✓ Saved: {filename}")
+    print(f"  [saved]   {filename}")
     return filename
 
 # ── CHG 1 — High severity patching ────────────────────────────
@@ -271,20 +271,58 @@ report5 = {
     }
 }
 
-# ── Save all 5 reports ─────────────────────────────────────────
-print("\nCreating 5 test CHG reports...\n")
-for report in [report1, report2, report3, report4, report5]:
-    save_report(report)
+# ══════════════════════════════════════════════════════════════
+#  STEP 1 — Save all 5 reports to disk
+# ══════════════════════════════════════════════════════════════
+all_reports = [report1, report2, report3, report4, report5]
 
+print("\nStep 1: Saving 5 CHG reports to reports/ folder...\n")
+saved_files = []
+for report in all_reports:
+    saved_files.append(save_report(report))
+
+# ══════════════════════════════════════════════════════════════
+#  STEP 2 — Ingest all reports into FAISS RAG
+#  THIS IS THE FIX: previously test_run.py stopped after Step 1,
+#  so the RAG index was always empty. Now we call EasyRAG.ingest()
+#  for every report so the chatbot has historical context.
+# ══════════════════════════════════════════════════════════════
+print("\nStep 2: Ingesting reports into FAISS vector store (RAG)...")
+print("  (This calls the Gemini embedding API — needs GEMINI_API_KEY)\n")
+
+try:
+    from rag.easy_rag import EasyRAG
+    rag = EasyRAG()
+
+    for report in all_reports:
+        chg = report["meta"]["chg_number"]
+        rag.ingest(report)
+
+    stats = rag.get_stats()
+    print(f"\n  RAG index now contains {stats['indexed_changes']} vectors")
+    rag_ok = True
+
+except Exception as e:
+    print(f"\n  [WARNING] RAG ingestion skipped: {e}")
+    print("  Reports are saved to disk — run this script again once GEMINI_API_KEY is set.")
+    rag_ok = False
+
+# ══════════════════════════════════════════════════════════════
+#  SUMMARY
+# ══════════════════════════════════════════════════════════════
+rag_status = "READY" if rag_ok else "SKIPPED (no API key)"
 print(f"""
 ╔══════════════════════════════════════════════════════╗
-║         5 Test Reports Created Successfully!         ║
+║         FlowMaster test data setup complete          ║
 ╠══════════════════════════════════════════════════════╣
 ║  CHG0012345 — OS Patching          → HIGH            ║
 ║  CHG0012346 — Oracle DB Upgrade    → CRITICAL        ║
 ║  CHG0012347 — Firewall Rules       → LOW             ║
 ║  CHG0012348 — MQ Middleware        → MEDIUM          ║
 ║  CHG0012349 — Emergency CVE Patch  → CRITICAL        ║
+╠══════════════════════════════════════════════════════╣
+║  Reports saved  : reports/                           ║
+║  RAG ingestion  : {rag_status:<34}║
 ╚══════════════════════════════════════════════════════╝
 
 Next step → run: streamlit run app.py
