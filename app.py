@@ -47,6 +47,27 @@ st.markdown("""
     .badge-high     { color:#fff; background:#E67E22; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; }
     .badge-medium   { color:#fff; background:#2980B9; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; }
     .badge-low      { color:#fff; background:#27AE60; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; }
+    /* Sticky New Chat button — always visible top-right regardless of scroll */
+    .sticky-new-chat {
+        position: fixed;
+        top: 14px;
+        right: 24px;
+        z-index: 9999;
+    }
+    .sticky-new-chat button {
+        background-color: #f0f2f6;
+        border: 1px solid #d0d3da;
+        border-radius: 8px;
+        padding: 6px 14px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        color: #31333f;
+        transition: background 0.2s;
+    }
+    .sticky-new-chat button:hover {
+        background-color: #e0e3ea;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -200,50 +221,58 @@ Risk Summary         : {impact.get('risk_summary')}
 # ══════════════════════════════════════════════════════════════
 def run_analysis(chg_number: str, placeholder) -> dict | None:
     """
-    Execute the full pipeline inside a Streamlit placeholder container.
+    Execute the full 5-step pipeline with a live execution trace panel.
 
-    Parameters
-    ----------
-    chg_number  : validated CHG string e.g. 'CHG0012345'
-    placeholder : st.empty() container where progress UI renders
-
-    Returns the report dict on success, None on failure.
+    trace_callback is passed to pipeline.py — called after each step
+    so the user sees exactly which file is running in real time.
+    The cached get_rag() instance is passed via rag_instance= so
+    FAISS is never loaded from disk twice in the same request.
     """
     from pipeline import run_pipeline, save_report
 
-    st.session_state.is_running    = True
+    st.session_state.is_running     = True
     st.session_state.pipeline_steps = []
 
-    STEPS = [
-        ("🔎 Step 1/5", "Fetching change record from ServiceNow...",    "change_miner"),
-        ("🗺  Step 2/5", "Traversing CMDB relationships (BFS)...",       "ci_mapper"),
-        ("🏷  Step 3/5", "Classifying environments (PROD / DR / QA)...", "env_classifier"),
-        ("🕸  Step 4/5", "Building CI dependency graph...",              "impact_graph"),
-        ("🤖 Step 5/5", "Running Gemini impact analysis...",            "impact_analyzer"),
-    ]
+    STEP_FILES = {
+        1: "change_miner.py",
+        2: "ci_mapper.py",
+        3: "env_classifier.py",
+        4: "impact_graph.py",
+        5: "impact_analyzer.py",
+        6: "easy_rag.py",
+    }
 
     try:
         with placeholder.container():
             st.markdown(f"### ⚙️ Analysing **{chg_number}**")
-            st.caption("Pipeline running — this takes 20–40 seconds")
-            progress_bar  = st.progress(0)
-            step_status   = st.empty()
-            completed_box = st.container()
+            st.caption("Pipeline executing — watch each core module run below")
+            progress_bar = st.progress(0)
+            current_step = st.empty()
+            trace_box    = st.container()
 
-            # Show steps advancing (UI feedback while pipeline runs)
-            for i, (label, msg, _) in enumerate(STEPS):
-                step_status.info(f"{label} — {msg}")
-                progress_bar.progress((i + 1) / (len(STEPS) + 1))
-                st.session_state.pipeline_steps.append(f"⏳ {label} — {msg}")
+            def trace_callback(step, msg, detail=""):
+                pct       = min(step / 6.0, 1.0)
+                progress_bar.progress(pct)
+                icon      = "✅" if "COMPLETE" in msg else ("⚠️" if "SKIP" in msg or "fail" in msg.lower() else "⏳")
+                file_name = STEP_FILES.get(step, "")
+                label     = icon + " **Step " + str(step) + "/6** &nbsp;·&nbsp; `" + file_name + "` &nbsp;·&nbsp; " + msg
+                if detail:
+                    label += "  \n&nbsp;&nbsp;&nbsp;&nbsp;↳ *" + detail + "*"
+                st.session_state.pipeline_steps.append({"step": step, "msg": msg, "detail": detail, "icon": icon})
+                current_step.info("Running: `" + file_name + "` — " + msg.split("→")[-1].strip())
+                with trace_box:
+                    st.markdown(label)
 
-            step_status.info("⚙️  Waiting for Gemini response...")
-
-            # ── The actual pipeline call ───────────────────────
-            report = run_pipeline(chg_number)
+            # ── Run the full pipeline ──────────────────────────
+            report = run_pipeline(
+                chg_number,
+                trace_callback=trace_callback,
+                rag_instance=get_rag()
+            )
 
             if "error" in report:
                 progress_bar.empty()
-                step_status.error(f"❌ Pipeline error: {report['error']}")
+                current_step.error(f"❌ Pipeline error: {report['error']}")
                 print(f"[App] Pipeline returned error for {chg_number}: {report['error']}")
                 st.session_state.is_running = False
                 return None
@@ -251,27 +280,16 @@ def run_analysis(chg_number: str, placeholder) -> dict | None:
             # ── Save to disk ───────────────────────────────────
             saved_path = save_report(report)
             print(f"[App] Report saved → {saved_path}")
-
-            # ── Ingest into RAG ────────────────────────────────
-            try:
-                rag = get_rag()
-                rag.ingest(report)
-                print(f"[App] RAG ingest complete for {chg_number}")
-            except Exception as rag_err:
-                print(f"[App] RAG ingest warning (non-fatal): {rag_err}")
+            # RAG ingest handled by pipeline Step 6 via rag_instance=get_rag()
 
             # ── Mark complete ──────────────────────────────────
             progress_bar.progress(1.0)
             sev  = report.get("impact", {}).get("severity", "")
             icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
-            step_status.success(
+            current_step.success(
                 f"✅ Analysis complete! {icon} Severity: **{sev}** | "
                 f"Downtime: **{report.get('impact', {}).get('estimated_downtime_minutes', '?')} min**"
             )
-            st.session_state.pipeline_steps = [
-                f"✅ {label} — done" for label, _, _ in STEPS
-            ]
-
             st.session_state.is_running = False
             return report
 
@@ -499,12 +517,21 @@ with st.sidebar:
     else:
         st.info("No change loaded yet.\n\nType a CHG number in the chat to begin.")
 
-    # Pipeline step log (shown during and after pipeline run)
+    # Pipeline execution trace (shown after pipeline run)
     if st.session_state.pipeline_steps:
         st.divider()
-        st.markdown("**Last pipeline run**")
-        for step in st.session_state.pipeline_steps:
-            st.caption(step)
+        st.markdown("**Last pipeline execution**")
+        for entry in st.session_state.pipeline_steps:
+            if isinstance(entry, dict):
+                icon   = entry.get("icon", "✅")
+                step   = entry.get("step", "")
+                msg    = entry.get("msg", "")
+                detail = entry.get("detail", "")
+                file_  = {1:"change_miner",2:"ci_mapper",3:"env_classifier",
+                          4:"impact_graph",5:"impact_analyzer",6:"easy_rag"}.get(step,"")
+                st.caption(f"{icon} {file_} — {detail or msg}")
+            else:
+                st.caption(str(entry))
 
     st.divider()
     st.caption("v1.0.0 · Mock ServiceNow · Gemini 2.5 Flash")
@@ -513,18 +540,28 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════
 #  MAIN CHAT UI
 # ══════════════════════════════════════════════════════════════
-col1, col2 = st.columns([5, 1])
-with col1:
-    st.markdown("## ⚡ FlowMaster Copilot")
-    st.caption("AI-Powered Change Impact Analysis — HCLTech")
-with col2:
-    if st.button("🗑 New Chat", use_container_width=True,
-                 disabled=st.session_state.is_running):
-        st.session_state.messages     = []
-        st.session_state.report       = None
-        st.session_state.chat_history = []
-        st.session_state.pipeline_steps = []
-        st.rerun()
+# Sticky New Chat button — stays fixed at top-right while user scrolls
+st.markdown("""
+<div class="sticky-new-chat">
+    <form action="" method="get">
+        <button type="submit" name="new_chat" value="1" onclick="
+            window.parent.postMessage({type:'streamlit:setComponentValue', value:true}, '*');
+        ">🗑 New Chat</button>
+    </form>
+</div>
+""", unsafe_allow_html=True)
+
+# Handle sticky button click via query params
+if st.query_params.get("new_chat"):
+    st.session_state.messages      = []
+    st.session_state.report        = None
+    st.session_state.chat_history  = []
+    st.session_state.pipeline_steps = []
+    st.query_params.clear()
+    st.rerun()
+
+st.markdown("## ⚡ FlowMaster Copilot")
+st.caption("AI-Powered Change Impact Analysis — HCLTech")
 
 # Status banner when report is loaded
 if st.session_state.report:
