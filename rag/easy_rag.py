@@ -16,6 +16,7 @@ class EasyRAG:
         self.vectorstore = self._load_or_create()
 
     def ingest(self, report: dict):
+        import time
         chg_number = report.get("meta", {}).get("chg_number", "UNKNOWN")
         text       = self._report_to_text(report)
         doc = Document(
@@ -27,9 +28,21 @@ class EasyRAG:
                 "environment": report.get("change", {}).get("environment", ""),
             }
         )
-        self.vectorstore.add_documents([doc])
-        self._save()
-        print(f"  [ingested] {chg_number}")
+        # Retry up to 3 times — SSL EOF errors are transient on VPN/corporate networks
+        for attempt in range(1, 4):
+            try:
+                self.vectorstore.add_documents([doc])
+                self._save()
+                print(f"  [RAG] Ingested {chg_number}")
+                return
+            except Exception as e:
+                err = str(e)
+                if attempt < 3:
+                    print(f"  [RAG] Ingest attempt {attempt} failed ({err[:60]}) — retrying in 3s...")
+                    time.sleep(3)
+                else:
+                    print(f"  [RAG] Ingest failed after 3 attempts for {chg_number}: {err}")
+                    raise
 
     def retrieve(self, report: dict) -> str:
         """
@@ -100,6 +113,7 @@ class EasyRAG:
         return {"indexed_changes": count, "index_path": self.index_path}
 
     def _load_or_create(self) -> FAISS:
+        import time
         if os.path.exists(self.index_path):
             print(f"[EasyRAG] Loading existing FAISS index from {self.index_path}")
             return FAISS.load_local(
@@ -107,15 +121,25 @@ class EasyRAG:
                 self.embeddings,
                 allow_dangerous_deserialization=True,
             )
-        print("[EasyRAG] Creating new FAISS index")
+        print("[EasyRAG] Creating new FAISS index...")
         placeholder = Document(
             page_content="FlowMaster RAG index initialised.",
             metadata={"chg_number": "INIT"}
         )
-        store = FAISS.from_documents([placeholder], self.embeddings)
-        os.makedirs(self.index_path, exist_ok=True)
-        store.save_local(self.index_path)
-        return store
+        # Retry for SSL/network issues on first embedding call
+        for attempt in range(1, 4):
+            try:
+                store = FAISS.from_documents([placeholder], self.embeddings)
+                os.makedirs(self.index_path, exist_ok=True)
+                store.save_local(self.index_path)
+                print(f"[EasyRAG] New index created at {self.index_path}")
+                return store
+            except Exception as e:
+                if attempt < 3:
+                    print(f"[EasyRAG] Init attempt {attempt} failed — retrying in 3s... ({str(e)[:60]})")
+                    time.sleep(3)
+                else:
+                    raise
 
     def _save(self):
         os.makedirs(self.index_path, exist_ok=True)

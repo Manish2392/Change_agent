@@ -221,49 +221,52 @@ Risk Summary         : {impact.get('risk_summary')}
 # ══════════════════════════════════════════════════════════════
 def run_analysis(chg_number: str, placeholder) -> dict | None:
     """
-    Execute the full 5-step pipeline with a live execution trace panel.
-
-    trace_callback is passed to pipeline.py — called after each step
-    so the user sees exactly which file is running in real time.
-    The cached get_rag() instance is passed via rag_instance= so
-    FAISS is never loaded from disk twice in the same request.
+    Run the full pipeline with a simple clean step-by-step UI.
+    Shows one line per step with a 2 second pause so the user
+    can read each step before the next one appears.
     """
+    import time
     from pipeline import run_pipeline, save_report
 
     st.session_state.is_running     = True
     st.session_state.pipeline_steps = []
 
-    STEP_FILES = {
-        1: "change_miner.py",
-        2: "ci_mapper.py",
-        3: "env_classifier.py",
-        4: "impact_graph.py",
-        5: "impact_analyzer.py",
-        6: "easy_rag.py",
+    STEP_LABELS = {
+        1: "change_miner.py  —  Fetching change record from ServiceNow",
+        2: "ci_mapper.py     —  Traversing CMDB (BFS)",
+        3: "env_classifier.py  —  Classifying environments",
+        4: "impact_graph.py  —  Building CI dependency graph",
+        5: "impact_analyzer.py  —  Running Gemini impact analysis",
+        6: "easy_rag.py      —  Ingesting into FAISS vector store",
     }
 
     try:
         with placeholder.container():
-            st.markdown(f"### ⚙️ Analysing **{chg_number}**")
-            st.caption("Pipeline executing — watch each core module run below")
-            progress_bar = st.progress(0)
-            current_step = st.empty()
-            trace_box    = st.container()
+            st.markdown(f"**Analysing {chg_number}...**")
+            step_slot = st.empty()
+            log_lines = []
 
             def trace_callback(step, msg, detail=""):
-                pct       = min(step / 6.0, 1.0)
-                progress_bar.progress(pct)
-                icon      = "✅" if "COMPLETE" in msg else ("⚠️" if "SKIP" in msg or "fail" in msg.lower() else "⏳")
-                file_name = STEP_FILES.get(step, "")
-                label     = icon + " **Step " + str(step) + "/6** &nbsp;·&nbsp; `" + file_name + "` &nbsp;·&nbsp; " + msg
-                if detail:
-                    label += "  \n&nbsp;&nbsp;&nbsp;&nbsp;↳ *" + detail + "*"
-                st.session_state.pipeline_steps.append({"step": step, "msg": msg, "detail": detail, "icon": icon})
-                current_step.info("Running: `" + file_name + "` — " + msg.split("→")[-1].strip())
-                with trace_box:
-                    st.markdown(label)
+                is_done = "COMPLETE" in msg
+                is_skip = "SKIP" in msg or "fail" in msg.lower()
+                icon    = "✅" if is_done else ("⚠️" if is_skip else "⏳")
 
-            # ── Run the full pipeline ──────────────────────────
+                if is_done or is_skip:
+                    label = STEP_LABELS.get(step, f"Step {step}")
+                    log_lines.append(f"{icon}  {label}")
+                    st.session_state.pipeline_steps.append(f"{icon}  {label}")
+                    if detail and (is_skip):
+                        log_lines.append(f"    ↳ {detail}")
+
+                # show current status + all completed so far
+                sep     = chr(10) + chr(10)
+                display = sep.join(log_lines)
+                if not is_done and not is_skip:
+                    label   = STEP_LABELS.get(step, f"Step {step}")
+                    display += (sep if log_lines else "") + "⏳  " + label + " ..."
+                step_slot.text(display)
+                time.sleep(2)
+
             report = run_pipeline(
                 chg_number,
                 trace_callback=trace_callback,
@@ -271,31 +274,21 @@ def run_analysis(chg_number: str, placeholder) -> dict | None:
             )
 
             if "error" in report:
-                progress_bar.empty()
-                current_step.error(f"❌ Pipeline error: {report['error']}")
-                print(f"[App] Pipeline returned error for {chg_number}: {report['error']}")
+                step_slot.error(f"Pipeline error: {report['error']}")
                 st.session_state.is_running = False
                 return None
 
-            # ── Save to disk ───────────────────────────────────
-            saved_path = save_report(report)
-            print(f"[App] Report saved → {saved_path}")
-            # RAG ingest handled by pipeline Step 6 via rag_instance=get_rag()
-
-            # ── Mark complete ──────────────────────────────────
-            progress_bar.progress(1.0)
+            save_report(report)
             sev  = report.get("impact", {}).get("severity", "")
             icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
-            current_step.success(
-                f"✅ Analysis complete! {icon} Severity: **{sev}** | "
-                f"Downtime: **{report.get('impact', {}).get('estimated_downtime_minutes', '?')} min**"
-            )
+            dt   = report.get("impact", {}).get("estimated_downtime_minutes", "?")
+            step_slot.success(f"Analysis complete — {icon} {sev} | Downtime: {dt} min")
             st.session_state.is_running = False
             return report
 
     except Exception as e:
-        print(f"[App] Unhandled pipeline exception: {traceback.format_exc()}")
-        placeholder.error(f"❌ Unexpected error: {type(e).__name__}: {e}")
+        print(f"[App] Pipeline exception: {traceback.format_exc()}")
+        placeholder.error(f"Error: {type(e).__name__}: {e}")
         st.session_state.is_running = False
         return None
 
