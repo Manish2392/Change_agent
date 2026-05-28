@@ -309,7 +309,7 @@ def ask_llm(user_question: str, report: dict) -> str:
         historical_context = get_rag().retrieve(report)
     except Exception as e:
         historical_context = "(No historical data available)"
-        print(f"[App] RAG retrieve error: {type(e).__name__}: {e}")
+        print(f"[App] RAG retrieve error test: {type(e).__name__}: {e}")
 
     system_prompt = f"""You are FlowMaster Copilot, an expert IT Change Management assistant at HCLTech.
 You help engineers understand the impact of ServiceNow change requests.
