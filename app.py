@@ -167,6 +167,19 @@ def report_to_context(report: dict) -> str:
             for ci in details.get(key, [])
         ) or "  (none)"
 
+    # Optional ExaCC / extended fields — only shown when present
+    extra_fields = ""
+    if change.get("change_reason"):
+        extra_fields += f"\nChange Reason : {change.get('change_reason')}"
+    if change.get("contact_list"):
+        extra_fields += f"\nContact       : {change.get('contact_list')}"
+    if change.get("contact_instructions"):
+        extra_fields += f"\nContact Info  : {change.get('contact_instructions')}"
+    if change.get("risk_description"):
+        extra_fields += f"\nRisk Detail   : {change.get('risk_description')}"
+    if change.get("user_service_impact"):
+        extra_fields += f"\nUser Impact   : {change.get('user_service_impact')}"
+
     return f"""
 === CHANGE REQUEST ===
 CHG Number   : {change.get('chg_number')}
@@ -176,7 +189,7 @@ Risk         : {change.get('risk')}
 Impact Level : {change.get('impact')}
 State        : {change.get('state')}
 Window       : {change.get('start_date')}  →  {change.get('end_date')}
-Environment  : {change.get('environment')}
+Environment  : {change.get('environment')}{extra_fields}
 
 === CI IMPACT SUMMARY ===
 PROD CIs     : {summary.get('PROD',     0)}
