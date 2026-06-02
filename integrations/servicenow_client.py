@@ -263,37 +263,50 @@ class MockServiceNowData:
         "ci_sys_oracle_prd_01": {
             "sys_id": "ci_sys_oracle_prd_01", "name": "oracle-prd-01",
             "sys_class_name": "cmdb_ci_db_ora_instance", "environment": "Production",
-            "operational_status": "1", "u_tier": "Tier-1", "u_business_service": "Core Banking",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "CDC", "u_region": "UK",
         },
         "ci_sys_web_prd_01": {
             "sys_id": "ci_sys_web_prd_01", "name": "web-prd-01",
             "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
-            "operational_status": "1", "u_tier": "Tier-1", "u_business_service": "Customer Portal",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "UK-Axiom", "u_application": "UK-Axiom",
+            "u_datacenter": "CDC", "u_region": "UK",
         },
         "ci_sys_app_prd_01": {
             "sys_id": "ci_sys_app_prd_01", "name": "app-prd-01",
             "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
-            "operational_status": "1", "u_tier": "Tier-1", "u_business_service": "Core Banking",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "CDC", "u_region": "UK",
         },
         "ci_sys_app_prd_02": {
             "sys_id": "ci_sys_app_prd_02", "name": "app-prd-02",
             "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
-            "operational_status": "1", "u_tier": "Tier-1", "u_business_service": "Core Banking",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "CDC", "u_region": "UK",
         },
         "ci_sys_fw_prd_01": {
             "sys_id": "ci_sys_fw_prd_01", "name": "fw-prd-core-01",
             "sys_class_name": "cmdb_ci_firewall", "environment": "Production",
-            "operational_status": "1", "u_tier": "Tier-1", "u_business_service": "Network Infrastructure",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "Network Infrastructure", "u_application": "",
+            "u_datacenter": "CDC", "u_region": "UK",
         },
         "ci_sys_oracle_dr_01": {
             "sys_id": "ci_sys_oracle_dr_01", "name": "oracle-dr-01",
             "sys_class_name": "cmdb_ci_db_ora_instance", "environment": "DR",
-            "operational_status": "1", "u_tier": "Tier-1", "u_business_service": "Core Banking",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "WDC", "u_region": "UK",
         },
         "ci_sys_san_dr_01": {
             "sys_id": "ci_sys_san_dr_01", "name": "san-dr-01",
             "sys_class_name": "cmdb_ci_storage_device", "environment": "DR",
-            "operational_status": "1", "u_tier": "Tier-2", "u_business_service": "Storage",
+            "operational_status": "1", "u_tier": "Tier-2",
+            "u_business_service": "Storage", "u_application": "",
         },
         "ci_sys_k8s_qa_01": {
             "sys_id": "ci_sys_k8s_qa_01", "name": "k8s-qa-cluster-01",
@@ -818,9 +831,14 @@ class MockServiceNowData:
     # Maps application name → list of CI sys_ids across all envs
     APP_INDEX = {
         "RSP":      ["ci_app_rsp_uk_prd_01", "ci_app_rsp_uk_prd_02",
-                     "ci_app_rsp_uk_dr_01",  "ci_app_rsp_de_prd_01"],
+                     "ci_app_rsp_uk_dr_01",  "ci_app_rsp_de_prd_01",
+                     # original CHG0001001 CIs also belong to RSP
+                     "ci_sys_oracle_prd_01", "ci_sys_app_prd_01",
+                     "ci_sys_app_prd_02",    "ci_sys_oracle_dr_01"],
         "UK-AXIOM": ["ci_app_ukaxiom_prd_01",    "ci_app_ukaxiom_prd_02",
-                     "ci_app_ukaxiom_dr_01",      "ci_app_ukaxiom_nonprod_01"],
+                     "ci_app_ukaxiom_dr_01",      "ci_app_ukaxiom_nonprod_01",
+                     # web-prd-01 is the UK-Axiom front-end
+                     "ci_sys_web_prd_01"],
         "SRC":      ["ci_app_src_sg_prd_01", "ci_app_src_sg_prd_02",
                      "ci_app_src_sg_dr_01",  "ci_app_src_uk_prd_01"],
         "CAD JP":   ["ci_app_cadjp_ny_prd_01", "ci_app_cadjp_ny_prd_02",
@@ -872,7 +890,7 @@ class MockServiceNowData:
     def get_app_cis(self, app_name: str) -> list:
         """
         Return all CIs for a given application name (e.g. 'RSP', 'UK-Axiom').
-        Useful for answering 'is PROD impacted for RSP?'
+        Looks in both APP_CIS and CIS dicts — original CHG CIs live in CIS.
         """
         key      = app_name.upper().replace("-", " ").replace(" ", "-")
         synonyms = {
@@ -882,7 +900,13 @@ class MockServiceNowData:
         }
         lookup_key = synonyms.get(key, app_name.upper())
         sys_ids    = self.APP_INDEX.get(lookup_key, [])
-        return [self.APP_CIS[sid] for sid in sys_ids if sid in self.APP_CIS]
+        result     = []
+        for sid in sys_ids:
+            if sid in self.APP_CIS:
+                result.append(self.APP_CIS[sid])
+            elif sid in self.CIS:
+                result.append(self.CIS[sid])
+        return result
 
 
 # ══════════════════════════════════════════════════════════════

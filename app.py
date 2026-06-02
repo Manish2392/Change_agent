@@ -210,7 +210,7 @@ Total CIs    : {sum(summary.values())}
 
 === IMPACT ANALYSIS ===
 Severity             : {impact.get('severity')}
-Estimated Downtime   : {impact.get('estimated_downtime_minutes')} minutes
+Estimated Downtime   : {_calc_downtime(change.get('start_date',''), change.get('end_date',''))} (calculated from window)
 Rollback Complexity  : {impact.get('rollback_complexity')}
 Affected Services    : {', '.join(impact.get('affected_business_services', []))}
 Risk Summary         : {impact.get('risk_summary')}
@@ -333,87 +333,162 @@ def _needs_app_lookup(question: str) -> str | None:
     return None
 
 
-def _app_ci_context(app_name: str) -> str:
+def _app_ci_context(app_name: str, report: dict = None) -> str:
     """
-    Change 2: Pull app CIs from mock data and return a formatted context block.
-    Answers questions like 'is PROD impacted for RSP?' without an LLM call.
+    Change 2: Pull app CIs and cross-reference with the current report's CIs.
+    Gives the LLM a definitive YES/NO per environment — no guessing.
     """
     from integrations.servicenow_client import ServiceNowClient
-    client = ServiceNowClient()
-    cis    = client.get_app_cis(app_name)
-    if not cis:
-        return ""
+    client   = ServiceNowClient()
+    app_cis  = client.get_app_cis(app_name)
+    if not app_cis:
+        return f"\n=== APPLICATION: {app_name.upper()} ===\nNo CIs found for this application in CMDB.\n"
 
-    prod    = [c for c in cis if "prod" in c.get("environment","").lower() and "non" not in c.get("environment","").lower()]
-    dr      = [c for c in cis if "dr"   in c.get("environment","").lower()]
-    nonprod = [c for c in cis if any(x in c.get("environment","").lower() for x in ["non","qa","uat","dev"])]
+    app_ci_names = {c["name"].lower() for c in app_cis}
+
+    # Cross-reference with the current report's CIs if available
+    report_prod    = []
+    report_dr      = []
+    report_nonprod = []
+    if report:
+        details = report.get("ci_details", {})
+        report_prod    = [ci["name"] for ci in details.get("prod",    []) if ci["name"].lower() in app_ci_names]
+        report_dr      = [ci["name"] for ci in details.get("dr",      []) if ci["name"].lower() in app_ci_names]
+        report_nonprod = [ci["name"] for ci in details.get("nonprod", []) if ci["name"].lower() in app_ci_names]
+
+    # All app CIs grouped by env
+    all_prod    = [c for c in app_cis if "prod" in c.get("environment","").lower() and "non" not in c.get("environment","").lower()]
+    all_dr      = [c for c in app_cis if "dr"   in c.get("environment","").lower()]
+    all_nonprod = [c for c in app_cis if any(x in c.get("environment","").lower() for x in ["non","qa","uat","dev"])]
 
     lines = [f"\n=== APPLICATION: {app_name.upper()} ==="]
-    lines.append(f"PROD ({len(prod)}): " + ", ".join(c['name'] for c in prod) if prod else "PROD (0): none")
-    lines.append(f"DR   ({len(dr)}): "   + ", ".join(c['name'] for c in dr)   if dr   else "DR   (0): none")
-    lines.append(f"NON-PROD ({len(nonprod)}): " + ", ".join(c['name'] for c in nonprod) if nonprod else "NON-PROD (0): none")
-    for ci in cis:
-        dc = ci.get("u_datacenter","?")
-        rg = ci.get("u_region","?")
-        ev = ci.get("environment","?")
-        lines.append(f"  - {ci['name']} | {ev} | DC: {dc} | Region: {rg}")
+
+    # Clear YES/NO impact statement based on cross-reference
+    if report:
+        if report_prod:
+            lines.append(f"⚠️  PROD IMPACTED — {len(report_prod)} PROD CI(s) in this change: {', '.join(report_prod)}")
+        else:
+            lines.append(f"✅ PROD NOT IMPACTED — no {app_name} PROD CIs are in this change")
+        if report_dr:
+            lines.append(f"⚠️  DR IMPACTED — {len(report_dr)} DR CI(s) in this change: {', '.join(report_dr)}")
+        else:
+            lines.append(f"✅ DR NOT IMPACTED — no {app_name} DR CIs are in this change")
+        if report_nonprod:
+            lines.append(f"ℹ️  NON-PROD IMPACTED — {', '.join(report_nonprod)}")
+
+    lines.append(f"\nAll {app_name} CIs in CMDB:")
+    for ci in all_prod:
+        tag = "← IN THIS CHANGE" if ci["name"] in report_prod else ""
+        lines.append(f"  PROD     | {ci['name']} | DC: {ci.get('u_datacenter','?')} | {ci.get('u_region','?')} {tag}")
+    for ci in all_dr:
+        tag = "← IN THIS CHANGE" if ci["name"] in report_dr else ""
+        lines.append(f"  DR       | {ci['name']} | DC: {ci.get('u_datacenter','?')} | {ci.get('u_region','?')} {tag}")
+    for ci in all_nonprod:
+        tag = "← IN THIS CHANGE" if ci["name"] in report_nonprod else ""
+        lines.append(f"  NON-PROD | {ci['name']} | DC: {ci.get('u_datacenter','?')} | {ci.get('u_region','?')} {tag}")
+
     return "\n".join(lines)
+
+
+def _calc_downtime(start: str, end: str) -> str:
+    """Calculate actual downtime from change window start/end times."""
+    try:
+        from datetime import datetime as dt
+        fmt  = "%Y-%m-%d %H:%M:%S"
+        diff = dt.strptime(end, fmt) - dt.strptime(start, fmt)
+        mins = int(diff.total_seconds() / 60)
+        hrs  = mins // 60
+        rem  = mins % 60
+        if hrs > 0:
+            return f"{hrs}h {rem}min" if rem else f"{hrs}h"
+        return f"{mins} min"
+    except Exception:
+        return "Unknown"
 
 
 def build_quick_summary(report: dict) -> str:
     """
-    Change 1: Show a fast, non-LLM summary on first CHG load.
-    Saves one full Gemini call every time a CHG is loaded.
-    RAG is not called here — user must explicitly ask for history.
+    Build a concise structured summary from report data — no LLM call.
+    Downtime is calculated from actual start/end times, not the LLM estimate.
+    The LLM is then called ONCE to give a rich description — this is the
+    only LLM call on first load.
     """
     change  = report.get("change",     {})
     impact  = report.get("impact",     {})
     summary = report.get("ci_summary", {})
     details = report.get("ci_details", {})
 
-    chg  = change.get("chg_number", "")
-    sev  = impact.get("severity", "UNKNOWN")
-    dt   = impact.get("estimated_downtime_minutes", "?")
-    rb   = impact.get("rollback_complexity", "?")
-    icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
+    chg       = change.get("chg_number", "")
+    sev       = impact.get("severity", "UNKNOWN")
+    icon      = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
+    downtime  = _calc_downtime(change.get("start_date",""), change.get("end_date",""))
+    rb        = impact.get("rollback_complexity", "?")
+    risk_sum  = impact.get("risk_summary", "")
+    svcs      = impact.get("affected_business_services", [])
+    risks     = impact.get("potential_failures",   [])
+    recs      = impact.get("recommendations",       [])
 
-    prod_names = [ci["name"] for ci in details.get("prod", [])]
-    svcs       = impact.get("affected_business_services", [])
-    risks      = impact.get("potential_failures",   [])[:3]
-    recs       = impact.get("recommendations",       [])[:3]
-    risk_sum   = impact.get("risk_summary", "")
-
-    prod_str  = "\n".join(f"  - {n}" for n in prod_names) if prod_names else "  - None"
-    svcs_str  = ", ".join(svcs) if svcs else "None"
-    risks_str = "\n".join(f"  - {r}" for r in risks) if risks else "  - None"
-    recs_str  = "\n".join(f"  - {r}" for r in recs)  if recs  else "  - None"
+    prod_cis    = [ci["name"] for ci in details.get("prod",    [])]
+    dr_cis      = [ci["name"] for ci in details.get("dr",      [])]
+    nonprod_cis = [ci["name"] for ci in details.get("nonprod", [])]
 
     lines = [
-        f"{icon} **{chg}** — {change.get('description','')}",
+        f"{icon} **{chg}** — {change.get('description', '')}",
         "",
         f"| Field | Value |",
         f"|---|---|",
-        f"| Severity | **{sev}** |",
-        f"| Downtime | **{dt} min** |",
-        f"| Rollback | {rb} |",
-        f"| Category | {change.get('category','')} |",
-        f"| Window | {change.get('start_date','')} → {change.get('end_date','')} |",
-        f"| PROD CIs | {summary.get('PROD',0)} | DR CIs | {summary.get('DR',0)} |",
-        "",
-        f"**Affected services:** {svcs_str}",
-        "",
-        f"**Risk summary:** {risk_sum}",
-        "",
-        f"**PROD CIs impacted:**\n{prod_str}",
-        "",
-        f"**Top risks:**\n{risks_str}",
-        "",
-        f"**Recommendations:**\n{recs_str}",
-        "",
-        "---",
-        "💬 Ask me anything about this change. "
-        "To see similar past changes, ask: *'show similar past changes'*",
+        f"| **Category** | {change.get('category','')} |",
+        f"| **Risk** | {change.get('risk','')} |",
+        f"| **State** | {change.get('state','')} |",
+        f"| **Change Window** | {change.get('start_date','')} → {change.get('end_date','')} |",
+        f"| **Max Downtime** | **{downtime}** (calculated from window) |",
+        f"| **Severity** | **{sev}** |",
+        f"| **Rollback Complexity** | {rb} |",
+        f"| **PROD CIs** | {summary.get('PROD',0)} | **DR CIs** | {summary.get('DR',0)} | **Non-Prod CIs** | {summary.get('NON-PROD',0)} |",
     ]
+
+    if change.get("contact_list"):
+        lines.append(f"| **Contact** | {change.get('contact_list','')} |")
+    if change.get("contact_instructions"):
+        lines.append(f"| **Contact Info** | {change.get('contact_instructions','')} |")
+
+    lines += ["", f"**Affected Applications/Services:** {', '.join(svcs) if svcs else 'None identified'}"]
+
+    if prod_cis:
+        lines += ["", f"**PROD CIs impacted ({len(prod_cis)}):**"]
+        for ci in prod_cis:
+            lines.append(f"  - `{ci}`")
+
+    if dr_cis:
+        lines += ["", f"**DR CIs impacted ({len(dr_cis)}):**"]
+        for ci in dr_cis:
+            lines.append(f"  - `{ci}`")
+
+    if nonprod_cis:
+        lines += ["", f"**Non-Prod CIs ({len(nonprod_cis)}):**"]
+        for ci in nonprod_cis:
+            lines.append(f"  - `{ci}`")
+
+    if risk_sum:
+        lines += ["", f"**Risk Summary:** {risk_sum}"]
+
+    if risks:
+        lines += ["", "**Potential Failures:**"]
+        for r in risks:
+            lines.append(f"  - {r}")
+
+    if recs:
+        lines += ["", "**Recommendations:**"]
+        for r in recs:
+            lines.append(f"  - {r}")
+
+    if change.get("user_service_impact"):
+        lines += ["", f"**User/Service Impact:** {change.get('user_service_impact')}"]
+    if change.get("risk_description"):
+        lines += ["", f"**Risk Detail:** {change.get('risk_description')}"]
+
+    lines += ["", "---", "💬 Ask me anything about this change."]
+
     return "\n".join(lines)
     """
     Change 1: No RAG on first load — only fetch RAG when user asks about history/past/similar.
@@ -511,7 +586,7 @@ def ask_llm(user_question: str, report: dict) -> str:
     app_context  = ""
     detected_app = _needs_app_lookup(user_question)
     if detected_app:
-        app_context = _app_ci_context(detected_app)
+        app_context = _app_ci_context(detected_app, report)
         print(f"[App] App CI context injected for: {detected_app}")
 
     rag_section = (
@@ -645,16 +720,7 @@ with st.sidebar:
         st.markdown(f"**{change.get('description', '')}**")
         st.divider()
 
-        # Key metrics
-        col1, col2 = st.columns(2)
-        col1.metric("Severity",    sev)
-        col2.metric("Downtime",    f"{impact.get('estimated_downtime_minutes','?')} min")
-        col1.metric("Rollback",    impact.get("rollback_complexity", "?"))
-        col2.metric("Category",    change.get("category", "?"))
-
-        st.divider()
-
-        # CI breakdown
+        # CI breakdown only — no metric cards
         st.markdown("**CI Breakdown**")
         st.markdown(f"🔴 PROD &nbsp;&nbsp;&nbsp; `{summary.get('PROD',0)}`")
         st.markdown(f"🟡 DR &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; `{summary.get('DR',0)}`")
@@ -746,15 +812,16 @@ st.caption("AI-Powered Change Impact Analysis — HCLTech")
 
 # Status banner when report is loaded
 if st.session_state.report:
-    chg  = st.session_state.report.get("change", {}).get("chg_number", "")
-    sev  = st.session_state.report.get("impact",  {}).get("severity",  "")
-    icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
-    prod = st.session_state.report.get("ci_summary", {}).get("PROD", 0)
-    dt   = st.session_state.report.get("impact", {}).get("estimated_downtime_minutes", "-")
-    svcs = ", ".join(st.session_state.report.get("impact", {}).get("affected_business_services", []))
+    chg   = st.session_state.report.get("change", {}).get("chg_number", "")
+    sev   = st.session_state.report.get("impact",  {}).get("severity",  "")
+    icon  = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
+    prod  = st.session_state.report.get("ci_summary", {}).get("PROD", 0)
+    chg_d = st.session_state.report.get("change", {})
+    dt    = _calc_downtime(chg_d.get("start_date",""), chg_d.get("end_date",""))
+    svcs  = ", ".join(st.session_state.report.get("impact", {}).get("affected_business_services", []))
     st.success(
         f"{icon} **{chg}** &nbsp;|&nbsp; Severity: **{sev}** &nbsp;|&nbsp; "
-        f"PROD CIs: **{prod}** &nbsp;|&nbsp; Downtime: **{dt} min** &nbsp;|&nbsp; "
+        f"PROD CIs: **{prod}** &nbsp;|&nbsp; Max Downtime: **{dt}** &nbsp;|&nbsp; "
         f"Services: *{svcs}*"
     )
 
@@ -768,30 +835,6 @@ if not st.session_state.messages:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-
-# Quick question buttons (only when report loaded)
-if st.session_state.report and not st.session_state.is_running:
-    st.markdown("**Quick questions:**")
-    quick = [
-        "Is production impacted?",
-        "How long will it be down?",
-        "What could go wrong?",
-        "What should we do?",
-        "Is RSP impacted?",
-        "Show similar past changes",
-    ]
-    cols = st.columns(3)
-    for i, q in enumerate(quick):
-        if cols[i % 3].button(q, key=f"q_{i}", use_container_width=True):
-            with st.chat_message("user"):
-                st.markdown(q)
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    reply = handle_input(q)
-                st.markdown(reply)
-            st.session_state.messages.append({"role": "user",      "content": q})
-            st.session_state.messages.append({"role": "assistant",  "content": reply})
-            st.rerun()
 
 # Chat input box
 if prompt := st.chat_input(
