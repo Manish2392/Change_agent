@@ -1,41 +1,43 @@
-# check_rag.py — Verify RAG is working end to end
-from rag.easy_rag import EasyRAG
+# config.py
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
-print("\n" + "="*50)
-print("  RAG Health Check")
-print("="*50)
+SNOW_INSTANCE        = os.getenv("SNOW_INSTANCE",  "https://your-company.service-now.com")
+SNOW_USERNAME        = os.getenv("SNOW_USERNAME",  "your_username")
+SNOW_PASSWORD        = os.getenv("SNOW_PASSWORD",  "your_password")
+USE_MOCK_SERVICENOW  = os.getenv("USE_MOCK_SERVICENOW", "true").lower() == "true"
 
-# Step 1: Check index
-print("\n[1] Checking FAISS index...")
-rag   = EasyRAG()
-stats = rag.get_stats()
-print(f"    Total CHGs in memory : {stats['indexed_changes']}")
-print(f"    Index path           : {stats['index_path']}")
+GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY", "your_gemini_api_key")
 
-if stats['indexed_changes'] == 0:
-    print("    ❌ Index is EMPTY — run python test_rag.py first!")
-else:
-    print(f"    ✓ Index has {stats['indexed_changes']} entries")
+# ── Model — gemini-2.5-flash is the best free tier model (2026) ──
+# Free limits: 10 req/min, 250 req/day
+# Fallback option: gemini-2.5-flash-lite (15 RPM, 1000 RPD, lighter)
+GEMINI_MODEL         = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-# Step 2: Test retrieval
-print("\n[2] Testing retrieval...")
-test_change = {
-    "description": "patch production servers",
-    "category":    "Patching",
-    "risk":        "Medium",
-    "environment": "Production"
-}
-result = rag.retrieve(test_change)
-print(f"\n    Query: '{test_change['description']}'")
-print(f"\n    Result:\n{result}")
+# ── Token caps ────────────────────────────────────────────────
+IMPACT_MAX_TOKENS    = int(os.getenv("IMPACT_MAX_TOKENS", "400"))
+CHAT_MAX_TOKENS      = int(os.getenv("CHAT_MAX_TOKENS",   "512"))
 
-# Step 3: Check if outcome data exists
-print("\n[3] Checking if outcome data is in RAG...")
-if "outcome" in result.lower() or "success" in result.lower() or "fail" in result.lower():
-    print("    ✓ Outcome data found in RAG!")
-else:
-    print("    ⚠ No outcome data yet — run record_outcome.py for each CHG")
+# ── Rate limit guard — seconds between LLM calls ─────────────
+# gemini-2.5-flash = 10 RPM → 1 call per 7s to be safe
+LLM_CALL_DELAY_SEC   = float(os.getenv("LLM_CALL_DELAY_SEC", "7"))
 
-print("\n" + "="*50)
-print("  RAG Check Complete!")
-print("="*50 + "\n")
+LANGCHAIN_VERBOSE    = False
+FAISS_INDEX_PATH     = "./rag/faiss_index"
+EMBEDDING_MODEL      = "models/gemini-embedding-001"
+RAG_TOP_K            = int(os.getenv("RAG_TOP_K", "2"))
+MAX_CI_DEPTH         = 3
+
+PROD_ENVS    = ["prod", "production", "prd"]
+DR_ENVS      = ["dr", "disaster-recovery", "disaster_recovery"]
+NONPROD_ENVS = ["dev", "qa", "uat", "staging", "test", "non-prod", "nonprod"]
+
+# ── Keywords that trigger RAG history lookup ──────────────────
+# Change 3: RAG only fires when user explicitly asks about history/past/similar
+RAG_TRIGGER_KEYWORDS = [
+    "similar", "past", "previous", "before", "history", "historic",
+    "last time", "before this", "other change", "comparison",
+    "pattern", "trend", "happened before", "similar change",
+    "have we done", "did we do",
+]

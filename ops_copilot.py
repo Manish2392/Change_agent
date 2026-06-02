@@ -1,8 +1,14 @@
-# ops_copilot.py — OpsCopilot (updated for new LangChain)
+# ops_copilot.py — OpsCopilot chat assistant
+# Changes for free-tier quota saving:
+#   - max_output_tokens capped (CHAT_MAX_TOKENS)
+#   - History trimmed from last 3 turns to last 2
+#   - System context sent only once (as first message), not repeated every turn
+#   - Rate limit delay before each LLM call
+
+import time
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from config import GEMINI_API_KEY, GEMINI_MODEL, CHAT_MAX_TOKENS, LLM_CALL_DELAY_SEC
 
 
 class OpsCopilot:
@@ -15,28 +21,31 @@ class OpsCopilot:
             model=GEMINI_MODEL,
             google_api_key=GEMINI_API_KEY,
             temperature=0.2,
+            max_output_tokens=CHAT_MAX_TOKENS,
         )
         print("[OpsCopilot] Ready.")
 
     def ask(self, question: str) -> str:
-        # Build messages list with history
+        # System context sent once as SystemMessage (cheaper than repeating in every Human turn)
         messages = [
-            HumanMessage(content=f"""You are OpsCopilot, an IT Change Management assistant.
-Use ONLY this report data to answer. Be concise and use bullet points for lists.
-If answer is not in the data say 'I don't have that information.'
-
-=== REPORT CONTEXT ===
-{self.context}
-"""),
+            SystemMessage(content=(
+                "You are OpsCopilot, an IT Change Management assistant. "
+                "Answer ONLY from the report data below. Be concise, use bullet points for lists. "
+                "If answer is not in the data say 'I don't have that information.'\n\n"
+                f"=== REPORT ===\n{self.context}"
+            )),
         ]
 
-        # Add last 3 turns of history
-        for turn in self.history[-3:]:
+        # Only last 2 turns of history (was 3) — saves tokens on free tier
+        for turn in self.history[-2:]:
             messages.append(HumanMessage(content=turn["q"]))
             messages.append(AIMessage(content=turn["a"]))
 
-        # Add current question
         messages.append(HumanMessage(content=question))
+
+        # Rate limit guard
+        if LLM_CALL_DELAY_SEC > 0:
+            time.sleep(LLM_CALL_DELAY_SEC)
 
         response = self.llm.invoke(messages)
         answer   = response.content.strip()
@@ -61,7 +70,6 @@ If answer is not in the data say 'I don't have that information.'
 
     def _build_context(self, report: dict) -> str:
         change  = report.get("change",     {})
-        summary = report.get("ci_summary", {})
         impact  = report.get("impact",     {})
         details = report.get("ci_details", {})
 
@@ -69,18 +77,27 @@ If answer is not in the data say 'I don't have that information.'
         dr_names      = [ci["name"] for ci in details.get("dr",      [])]
         nonprod_names = [ci["name"] for ci in details.get("nonprod", [])]
 
-        return f"""
-Change     : {change.get('chg_number')} — {change.get('description')}
-Category   : {change.get('category')} | Risk: {change.get('risk')}
-Window     : {change.get('start_date')} to {change.get('end_date')}
-Severity   : {impact.get('severity')}
-Downtime   : {impact.get('estimated_downtime_minutes')} minutes
-Rollback   : {impact.get('rollback_complexity')}
-PROD CIs   : {', '.join(prod_names)    or 'None'}
-DR CIs     : {', '.join(dr_names)      or 'None'}
-NONPROD CIs: {', '.join(nonprod_names) or 'None'}
-Services   : {', '.join(impact.get('affected_business_services', []))}
-Risk       : {impact.get('risk_summary')}
-Failures   : {'; '.join(impact.get('potential_failures', []))}
-Recommend  : {'; '.join(impact.get('recommendations', []))}
-""".strip()
+        # Extra ExaCC fields (only shown when present — avoids padding tokens)
+        extras = ""
+        if change.get("contact_list"):
+            extras += f"\nContact    : {change.get('contact_list')}"
+        if change.get("user_service_impact"):
+            extras += f"\nSvc Impact : {change.get('user_service_impact')}"
+        if change.get("risk_description"):
+            extras += f"\nRisk Detail: {change.get('risk_description')}"
+
+        return (
+            f"CHG: {change.get('chg_number')} — {change.get('description')}\n"
+            f"Category: {change.get('category')} | Risk: {change.get('risk')}\n"
+            f"Window: {change.get('start_date')} to {change.get('end_date')}\n"
+            f"Severity: {impact.get('severity')} | Downtime: {impact.get('estimated_downtime_minutes')} min\n"
+            f"Rollback: {impact.get('rollback_complexity')}\n"
+            f"PROD: {', '.join(prod_names) or 'None'}\n"
+            f"DR: {', '.join(dr_names) or 'None'}\n"
+            f"NON-PROD: {', '.join(nonprod_names) or 'None'}\n"
+            f"Services: {', '.join(impact.get('affected_business_services', []))}\n"
+            f"Risk: {impact.get('risk_summary')}\n"
+            f"Failures: {'; '.join(impact.get('potential_failures', []))}\n"
+            f"Recommendations: {'; '.join(impact.get('recommendations', []))}"
+            f"{extras}"
+        )

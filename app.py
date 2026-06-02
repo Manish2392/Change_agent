@@ -23,7 +23,7 @@ import traceback
 from datetime import datetime
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from config import GEMINI_API_KEY, GEMINI_MODEL, CHAT_MAX_TOKENS, LLM_CALL_DELAY_SEC
 
 
 # ══════════════════════════════════════════════════════════════
@@ -95,9 +95,10 @@ def get_llm():
     """Gemini LLM — cached for the full Streamlit session."""
     print("[App] Initialising Gemini LLM...")
     return ChatGoogleGenerativeAI(
-        model        = GEMINI_MODEL,
-        google_api_key = GEMINI_API_KEY,
-        temperature  = 0.2,
+        model            = GEMINI_MODEL,
+        google_api_key   = GEMINI_API_KEY,
+        temperature      = 0.2,
+        max_output_tokens= CHAT_MAX_TOKENS,
     )
 
 @st.cache_resource(show_spinner=False)
@@ -309,50 +310,166 @@ def run_analysis(chg_number: str, placeholder) -> dict | None:
 # ══════════════════════════════════════════════════════════════
 #  LLM CHAT
 # ══════════════════════════════════════════════════════════════
-def ask_llm(user_question: str, report: dict) -> str:
+def _needs_rag(question: str) -> bool:
     """
-    Send question + full report context + RAG history to Gemini.
-    Keeps last 6 turns of conversation memory.
+    Change 3: Only hit RAG when user explicitly asks about history/past/similar.
+    Saves free-tier quota — no RAG on first load or simple factual questions.
     """
+    from config import RAG_TRIGGER_KEYWORDS
+    q = question.lower()
+    return any(kw in q for kw in RAG_TRIGGER_KEYWORDS)
+
+
+def _needs_app_lookup(question: str) -> str | None:
+    """
+    Change 2: Detect app-specific questions like 'is PROD impacted for RSP?'
+    Returns the app name if detected, else None.
+    """
+    APPS = ["RSP", "UK-AXIOM", "UK AXIOM", "UKAXIOM", "SRC", "CAD JP", "CADJP", "RCL"]
+    q = question.upper()
+    for app in APPS:
+        if app in q:
+            return app
+    return None
+
+
+def _app_ci_context(app_name: str) -> str:
+    """
+    Change 2: Pull app CIs from mock data and return a formatted context block.
+    Answers questions like 'is PROD impacted for RSP?' without an LLM call.
+    """
+    from integrations.servicenow_client import ServiceNowClient
+    client = ServiceNowClient()
+    cis    = client.get_app_cis(app_name)
+    if not cis:
+        return ""
+
+    prod    = [c for c in cis if "prod" in c.get("environment","").lower() and "non" not in c.get("environment","").lower()]
+    dr      = [c for c in cis if "dr"   in c.get("environment","").lower()]
+    nonprod = [c for c in cis if any(x in c.get("environment","").lower() for x in ["non","qa","uat","dev"])]
+
+    lines = [f"\n=== APPLICATION: {app_name.upper()} ==="]
+    lines.append(f"PROD ({len(prod)}): " + ", ".join(c['name'] for c in prod) if prod else "PROD (0): none")
+    lines.append(f"DR   ({len(dr)}): "   + ", ".join(c['name'] for c in dr)   if dr   else "DR   (0): none")
+    lines.append(f"NON-PROD ({len(nonprod)}): " + ", ".join(c['name'] for c in nonprod) if nonprod else "NON-PROD (0): none")
+    for ci in cis:
+        dc = ci.get("u_datacenter","?")
+        rg = ci.get("u_region","?")
+        ev = ci.get("environment","?")
+        lines.append(f"  - {ci['name']} | {ev} | DC: {dc} | Region: {rg}")
+    return "\n".join(lines)
+
+
+def build_quick_summary(report: dict) -> str:
+    """
+    Change 1: Show a fast, non-LLM summary on first CHG load.
+    Saves one full Gemini call every time a CHG is loaded.
+    RAG is not called here — user must explicitly ask for history.
+    """
+    change  = report.get("change",     {})
+    impact  = report.get("impact",     {})
+    summary = report.get("ci_summary", {})
+    details = report.get("ci_details", {})
+
+    chg  = change.get("chg_number", "")
+    sev  = impact.get("severity", "UNKNOWN")
+    dt   = impact.get("estimated_downtime_minutes", "?")
+    rb   = impact.get("rollback_complexity", "?")
+    icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
+
+    prod_names = [ci["name"] for ci in details.get("prod", [])]
+    svcs       = impact.get("affected_business_services", [])
+    risks      = impact.get("potential_failures",   [])[:3]
+    recs       = impact.get("recommendations",       [])[:3]
+    risk_sum   = impact.get("risk_summary", "")
+
+    prod_str  = "\n".join(f"  - {n}" for n in prod_names) if prod_names else "  - None"
+    svcs_str  = ", ".join(svcs) if svcs else "None"
+    risks_str = "\n".join(f"  - {r}" for r in risks) if risks else "  - None"
+    recs_str  = "\n".join(f"  - {r}" for r in recs)  if recs  else "  - None"
+
+    lines = [
+        f"{icon} **{chg}** — {change.get('description','')}",
+        "",
+        f"| Field | Value |",
+        f"|---|---|",
+        f"| Severity | **{sev}** |",
+        f"| Downtime | **{dt} min** |",
+        f"| Rollback | {rb} |",
+        f"| Category | {change.get('category','')} |",
+        f"| Window | {change.get('start_date','')} → {change.get('end_date','')} |",
+        f"| PROD CIs | {summary.get('PROD',0)} | DR CIs | {summary.get('DR',0)} |",
+        "",
+        f"**Affected services:** {svcs_str}",
+        "",
+        f"**Risk summary:** {risk_sum}",
+        "",
+        f"**PROD CIs impacted:**\n{prod_str}",
+        "",
+        f"**Top risks:**\n{risks_str}",
+        "",
+        f"**Recommendations:**\n{recs_str}",
+        "",
+        "---",
+        "💬 Ask me anything about this change. "
+        "To see similar past changes, ask: *'show similar past changes'*",
+    ]
+    return "\n".join(lines)
+    """
+    Change 1: No RAG on first load — only fetch RAG when user asks about history/past/similar.
+    Change 2: Inject app-specific CI context when question mentions RSP/UK-Axiom/SRC/CAD JP/RCL.
+    Change 3: Rate-limited, token-capped, RAG keyword-gated to minimise free-tier usage.
+    """
+    import time
     llm     = get_llm()
     context = report_to_context(report)
 
-    # RAG retrieval — non-fatal if it fails
-    try:
-        historical_context = get_rag().retrieve(report)
-    except Exception as e:
-        historical_context = "(No historical data available)"
-        print(f"[App] RAG retrieve error test: {type(e).__name__}: {e}")
+    # Change 3: RAG only on explicit history/similar keywords
+    historical_context = ""
+    if _needs_rag(user_question):
+        try:
+            historical_context = get_rag().retrieve(report)
+            print(f"[App] RAG triggered by keyword in: {user_question[:60]}")
+        except Exception as e:
+            historical_context = ""
+            print(f"[App] RAG error: {e}")
+    else:
+        print(f"[App] RAG skipped — no history keyword detected")
 
-    system_prompt = f"""You are FlowMaster Copilot, an expert IT Change Management assistant at HCLTech.
-You help engineers understand the impact of ServiceNow change requests.
+    # Change 2: App-specific CI context injection
+    app_context = ""
+    detected_app = _needs_app_lookup(user_question)
+    if detected_app:
+        app_context = _app_ci_context(detected_app)
+        print(f"[App] App CI context injected for: {detected_app}")
 
-You have access to TWO sources of information:
-  1. CURRENT CHANGE REPORT — the full impact analysis for the change being discussed
-  2. HISTORICAL SIMILAR CHANGES — past similar changes retrieved from the RAG vector store
+    # Build system prompt
+    rag_section = (
+        f"\n=== HISTORICAL SIMILAR CHANGES ===\n{historical_context}"
+        if historical_context else ""
+    )
+    app_section = app_context  # already formatted with header
 
-Rules:
-  - Use BOTH sources in your answers
-  - For questions about past changes, patterns, or "what happened before" — use RAG HISTORY
-  - Be professional but conversational
-  - Use bullet points for lists, bold for key numbers
-  - Never make up data not present in the report
-
-=== CURRENT CHANGE REPORT ===
-{context}
-
-=== HISTORICAL SIMILAR CHANGES (RAG MEMORY) ===
-{historical_context}
-"""
+    system_prompt = (
+        "You are FlowMaster Copilot, an expert IT Change Management assistant at HCLTech.\n"
+        "Answer questions about the change report below. Be concise and professional.\n"
+        "Use bullet points for lists. Bold key numbers. Never invent data.\n"
+        "If asked about an application (RSP/UK-Axiom/SRC/CAD JP/RCL), use the APPLICATION section below.\n\n"
+        f"=== CURRENT CHANGE REPORT ===\n{context}"
+        f"{app_section}"
+        f"{rag_section}"
+    )
 
     messages = [SystemMessage(content=system_prompt)]
 
-    # Inject last 6 conversation turns as memory
-    for turn in st.session_state.chat_history[-6:]:
+    for turn in st.session_state.chat_history[-4:]:
         messages.append(HumanMessage(content=turn["q"]))
         messages.append(AIMessage(content=turn["a"]))
 
     messages.append(HumanMessage(content=user_question))
+
+    if LLM_CALL_DELAY_SEC > 0:
+        time.sleep(LLM_CALL_DELAY_SEC)
 
     try:
         response = llm.invoke(messages)
@@ -368,6 +485,72 @@ Rules:
 # ══════════════════════════════════════════════════════════════
 #  INPUT HANDLER
 # ══════════════════════════════════════════════════════════════
+def ask_llm(user_question: str, report: dict) -> str:
+    """
+    Change 1: No RAG on first load — only fetch RAG when user asks about history/past/similar.
+    Change 2: Inject app-specific CI context when question mentions RSP/UK-Axiom/SRC/CAD JP/RCL.
+    Change 3: Rate-limited, token-capped, RAG keyword-gated to minimise free-tier usage.
+    """
+    import time
+    llm     = get_llm()
+    context = report_to_context(report)
+
+    # Change 3: RAG only on explicit history/similar keywords
+    historical_context = ""
+    if _needs_rag(user_question):
+        try:
+            historical_context = get_rag().retrieve(report)
+            print(f"[App] RAG triggered by keyword in: {user_question[:60]}")
+        except Exception as e:
+            historical_context = ""
+            print(f"[App] RAG error: {e}")
+    else:
+        print(f"[App] RAG skipped — no history keyword detected")
+
+    # Change 2: App-specific CI context injection
+    app_context  = ""
+    detected_app = _needs_app_lookup(user_question)
+    if detected_app:
+        app_context = _app_ci_context(detected_app)
+        print(f"[App] App CI context injected for: {detected_app}")
+
+    rag_section = (
+        f"\n=== HISTORICAL SIMILAR CHANGES ===\n{historical_context}"
+        if historical_context else ""
+    )
+
+    system_prompt = (
+        "You are FlowMaster Copilot, an expert IT Change Management assistant at HCLTech.\n"
+        "Answer questions about the change report below. Be concise and professional.\n"
+        "Use bullet points for lists. Bold key numbers. Never invent data.\n"
+        "If asked about an application (RSP/UK-Axiom/SRC/CAD JP/RCL), use the APPLICATION section below.\n\n"
+        f"=== CURRENT CHANGE REPORT ===\n{context}"
+        f"{app_context}"
+        f"{rag_section}"
+    )
+
+    messages = [SystemMessage(content=system_prompt)]
+
+    for turn in st.session_state.chat_history[-4:]:
+        messages.append(HumanMessage(content=turn["q"]))
+        messages.append(AIMessage(content=turn["a"]))
+
+    messages.append(HumanMessage(content=user_question))
+
+    if LLM_CALL_DELAY_SEC > 0:
+        time.sleep(LLM_CALL_DELAY_SEC)
+
+    try:
+        response = llm.invoke(messages)
+        answer   = response.content.strip()
+    except Exception as e:
+        print(f"[App] Gemini call failed: {e}")
+        answer = f"⚠️ LLM error: {type(e).__name__}: {e}"
+
+    st.session_state.chat_history.append({"q": user_question, "a": answer})
+    return answer
+
+
 def handle_input(user_input: str) -> str:
     """
     Route user input to the right action:
@@ -385,18 +568,14 @@ def handle_input(user_input: str) -> str:
         if st.session_state.is_running:
             return "⏳ Analysis already in progress — please wait..."
 
-        # ── Try saved report first (instant) ──────────────────
+        # ── Try saved report first (instant, no LLM) ──────────
         report = load_report_by_chg(chg_number)
         if report:
             st.session_state.report       = report
             st.session_state.chat_history = []
-            print(f"[App] Loaded saved report for {chg_number}")
-            return ask_llm(
-                f"Report loaded for {chg_number} from saved data. "
-                f"Give a clear summary: severity, downtime, PROD CIs affected, "
-                f"top 3 risks, and key recommendations.",
-                report
-            )
+            print(f"[App] Loaded saved report for {chg_number} — using quick summary (no LLM)")
+            # Change 1: no LLM on first load — just render the report data directly
+            return build_quick_summary(report)
 
         # ── No saved report — run full pipeline ───────────────
         pipeline_placeholder = st.empty()
@@ -414,12 +593,8 @@ def handle_input(user_input: str) -> str:
 
         st.session_state.report       = report
         st.session_state.chat_history = []
-        return ask_llm(
-            f"Fresh analysis complete for {chg_number}. "
-            f"Give a clear summary: severity, downtime, PROD CIs affected, "
-            f"top 3 risks, and key recommendations.",
-            report
-        )
+        # Change 1: no LLM on first load even for fresh pipeline — use quick summary
+        return build_quick_summary(report)
 
     # ── Normal question — report loaded ───────────────────────
     if st.session_state.report:
@@ -602,8 +777,8 @@ if st.session_state.report and not st.session_state.is_running:
         "How long will it be down?",
         "What could go wrong?",
         "What should we do?",
-        "Find similar past changes",
-        "Is this safe to proceed?",
+        "Is RSP impacted?",
+        "Show similar past changes",
     ]
     cols = st.columns(3)
     for i, q in enumerate(quick):

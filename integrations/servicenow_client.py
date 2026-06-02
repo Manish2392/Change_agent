@@ -589,6 +589,248 @@ class MockServiceNowData:
         ],
     }
 
+    # ── Application-wise CIs ─────────────────────────────────
+    # Change 2: Application-to-CI mapping for RSP, UK-Axiom, SRC, CAD JP, RCL
+    # These allow the LLM to answer "is PROD impacted for RSP?"
+    APP_CIS = {
+        "ci_app_rsp_uk_prd_01": {
+            "sys_id": "ci_app_rsp_uk_prd_01", "name": "rsp-uk-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "CDC", "u_region": "UK",
+        },
+        "ci_app_rsp_uk_prd_02": {
+            "sys_id": "ci_app_rsp_uk_prd_02", "name": "rsp-uk-app-prd-02",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "CDC", "u_region": "UK",
+        },
+        "ci_app_rsp_uk_dr_01": {
+            "sys_id": "ci_app_rsp_uk_dr_01", "name": "rsp-uk-app-dr-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "DR",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "WDC", "u_region": "UK",
+        },
+        "ci_app_rsp_de_prd_01": {
+            "sys_id": "ci_app_rsp_de_prd_01", "name": "rsp-de-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RSP", "u_application": "RSP",
+            "u_datacenter": "DCN", "u_region": "Germany",
+        },
+
+        # UK-Axiom — UK fixed income trading platform
+        "ci_app_ukaxiom_prd_01": {
+            "sys_id": "ci_app_ukaxiom_prd_01", "name": "uk-axiom-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "UK-Axiom", "u_application": "UK-Axiom",
+            "u_datacenter": "CDC", "u_region": "UK",
+        },
+        "ci_app_ukaxiom_prd_02": {
+            "sys_id": "ci_app_ukaxiom_prd_02", "name": "uk-axiom-app-prd-02",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "UK-Axiom", "u_application": "UK-Axiom",
+            "u_datacenter": "CDC", "u_region": "UK",
+        },
+        "ci_app_ukaxiom_dr_01": {
+            "sys_id": "ci_app_ukaxiom_dr_01", "name": "uk-axiom-app-dr-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "DR",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "UK-Axiom", "u_application": "UK-Axiom",
+            "u_datacenter": "WDC", "u_region": "UK",
+        },
+        "ci_app_ukaxiom_nonprod_01": {
+            "sys_id": "ci_app_ukaxiom_nonprod_01", "name": "uk-axiom-app-uat-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Non-Production",
+            "operational_status": "1", "u_tier": "Tier-2",
+            "u_business_service": "UK-Axiom", "u_application": "UK-Axiom",
+            "u_datacenter": "CDC", "u_region": "UK",
+        },
+
+        # SRC — Securities Reference & Collateral (Singapore + UK)
+        "ci_app_src_sg_prd_01": {
+            "sys_id": "ci_app_src_sg_prd_01", "name": "src-sg-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "SRC", "u_application": "SRC",
+            "u_datacenter": "9TS", "u_region": "Singapore",
+        },
+        "ci_app_src_sg_prd_02": {
+            "sys_id": "ci_app_src_sg_prd_02", "name": "src-sg-app-prd-02",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "SRC", "u_application": "SRC",
+            "u_datacenter": "9TS", "u_region": "Singapore",
+        },
+        "ci_app_src_sg_dr_01": {
+            "sys_id": "ci_app_src_sg_dr_01", "name": "src-sg-app-dr-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "DR",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "SRC", "u_application": "SRC",
+            "u_datacenter": "DSJ", "u_region": "Singapore",
+        },
+        "ci_app_src_uk_prd_01": {
+            "sys_id": "ci_app_src_uk_prd_01", "name": "src-uk-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "SRC", "u_application": "SRC",
+            "u_datacenter": "CDC", "u_region": "UK",
+        },
+
+        # CAD JP — Canadian/Japan clearing & derivatives (New York + Singapore)
+        "ci_app_cadjp_ny_prd_01": {
+            "sys_id": "ci_app_cadjp_ny_prd_01", "name": "cadjp-ny-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "CAD JP", "u_application": "CAD JP",
+            "u_datacenter": "2PK", "u_region": "New York",
+        },
+        "ci_app_cadjp_ny_prd_02": {
+            "sys_id": "ci_app_cadjp_ny_prd_02", "name": "cadjp-ny-app-prd-02",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "CAD JP", "u_application": "CAD JP",
+            "u_datacenter": "2PK", "u_region": "New York",
+        },
+        "ci_app_cadjp_ny_dr_01": {
+            "sys_id": "ci_app_cadjp_ny_dr_01", "name": "cadjp-ny-app-dr-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "DR",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "CAD JP", "u_application": "CAD JP",
+            "u_datacenter": "CORP", "u_region": "New York",
+        },
+        "ci_app_cadjp_sg_prd_01": {
+            "sys_id": "ci_app_cadjp_sg_prd_01", "name": "cadjp-sg-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "CAD JP", "u_application": "CAD JP",
+            "u_datacenter": "9TS", "u_region": "Singapore",
+        },
+        "ci_app_cadjp_nonprod_01": {
+            "sys_id": "ci_app_cadjp_nonprod_01", "name": "cadjp-ny-app-qa-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Non-Production",
+            "operational_status": "1", "u_tier": "Tier-2",
+            "u_business_service": "CAD JP", "u_application": "CAD JP",
+            "u_datacenter": "2PK", "u_region": "New York",
+        },
+
+        # RCL — Regulatory Compliance & Lifecycle (India + Germany)
+        "ci_app_rcl_in_prd_01": {
+            "sys_id": "ci_app_rcl_in_prd_01", "name": "rcl-in-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RCL", "u_application": "RCL",
+            "u_datacenter": "BKC", "u_region": "India",
+        },
+        "ci_app_rcl_in_prd_02": {
+            "sys_id": "ci_app_rcl_in_prd_02", "name": "rcl-in-app-prd-02",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RCL", "u_application": "RCL",
+            "u_datacenter": "BKC", "u_region": "India",
+        },
+        "ci_app_rcl_in_dr_01": {
+            "sys_id": "ci_app_rcl_in_dr_01", "name": "rcl-in-app-dr-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "DR",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RCL", "u_application": "RCL",
+            "u_datacenter": "Tata", "u_region": "India",
+        },
+        "ci_app_rcl_de_prd_01": {
+            "sys_id": "ci_app_rcl_de_prd_01", "name": "rcl-de-app-prd-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Production",
+            "operational_status": "1", "u_tier": "Tier-1",
+            "u_business_service": "RCL", "u_application": "RCL",
+            "u_datacenter": "DCN", "u_region": "Germany",
+        },
+        "ci_app_rcl_nonprod_01": {
+            "sys_id": "ci_app_rcl_nonprod_01", "name": "rcl-in-app-uat-01",
+            "sys_class_name": "cmdb_ci_app_server", "environment": "Non-Production",
+            "operational_status": "1", "u_tier": "Tier-2",
+            "u_business_service": "RCL", "u_application": "RCL",
+            "u_datacenter": "BKC", "u_region": "India",
+        },
+    }
+    APP_CI_RELATIONSHIPS = {
+        # RSP depends on UK ExaCC DB
+        "ci_app_rsp_uk_prd_01": [
+            {"parent": {"value": "ci_app_rsp_uk_prd_01"},
+             "child":  {"value": "ci_exacc_uk_cdc_prd_01"},
+             "type":   {"display_value": "Depends on::Used by"}},
+            {"parent": {"value": "ci_app_rsp_uk_prd_01"},
+             "child":  {"value": "ci_app_rsp_uk_prd_02"},
+             "type":   {"display_value": "Cluster member::Cluster member"}},
+        ],
+        "ci_app_rsp_de_prd_01": [
+            {"parent": {"value": "ci_app_rsp_de_prd_01"},
+             "child":  {"value": "ci_exacc_de_dcn_prd_01"},
+             "type":   {"display_value": "Depends on::Used by"}},
+        ],
+        # UK-Axiom depends on UK ExaCC DB
+        "ci_app_ukaxiom_prd_01": [
+            {"parent": {"value": "ci_app_ukaxiom_prd_01"},
+             "child":  {"value": "ci_exacc_uk_cdc_prd_01"},
+             "type":   {"display_value": "Depends on::Used by"}},
+            {"parent": {"value": "ci_app_ukaxiom_prd_01"},
+             "child":  {"value": "ci_app_ukaxiom_prd_02"},
+             "type":   {"display_value": "Cluster member::Cluster member"}},
+        ],
+        # SRC depends on Singapore ExaCC DB
+        "ci_app_src_sg_prd_01": [
+            {"parent": {"value": "ci_app_src_sg_prd_01"},
+             "child":  {"value": "ci_exacc_sg_9ts_prd_01"},
+             "type":   {"display_value": "Depends on::Used by"}},
+            {"parent": {"value": "ci_app_src_sg_prd_01"},
+             "child":  {"value": "ci_app_src_sg_prd_02"},
+             "type":   {"display_value": "Cluster member::Cluster member"}},
+        ],
+        # CAD JP depends on New York ExaCC DB
+        "ci_app_cadjp_ny_prd_01": [
+            {"parent": {"value": "ci_app_cadjp_ny_prd_01"},
+             "child":  {"value": "ci_exacc_ny_2pk_prd_01"},
+             "type":   {"display_value": "Depends on::Used by"}},
+            {"parent": {"value": "ci_app_cadjp_sg_prd_01"},
+             "child":  {"value": "ci_app_cadjp_ny_prd_01"},
+             "type":   {"display_value": "Cross-region peer::Cross-region peer"}},
+        ],
+        # RCL depends on India ExaCC DB
+        "ci_app_rcl_in_prd_01": [
+            {"parent": {"value": "ci_app_rcl_in_prd_01"},
+             "child":  {"value": "ci_exacc_in_bkc_prd_01"},
+             "type":   {"display_value": "Depends on::Used by"}},
+            {"parent": {"value": "ci_app_rcl_in_prd_01"},
+             "child":  {"value": "ci_app_rcl_in_prd_02"},
+             "type":   {"display_value": "Cluster member::Cluster member"}},
+        ],
+        "ci_app_rcl_de_prd_01": [
+            {"parent": {"value": "ci_app_rcl_de_prd_01"},
+             "child":  {"value": "ci_exacc_de_dcn_prd_01"},
+             "type":   {"display_value": "Depends on::Used by"}},
+        ],
+    }
+
+    # ── Application-to-CI index (for direct app lookup) ──────
+    # Maps application name → list of CI sys_ids across all envs
+    APP_INDEX = {
+        "RSP":      ["ci_app_rsp_uk_prd_01", "ci_app_rsp_uk_prd_02",
+                     "ci_app_rsp_uk_dr_01",  "ci_app_rsp_de_prd_01"],
+        "UK-AXIOM": ["ci_app_ukaxiom_prd_01",    "ci_app_ukaxiom_prd_02",
+                     "ci_app_ukaxiom_dr_01",      "ci_app_ukaxiom_nonprod_01"],
+        "SRC":      ["ci_app_src_sg_prd_01", "ci_app_src_sg_prd_02",
+                     "ci_app_src_sg_dr_01",  "ci_app_src_uk_prd_01"],
+        "CAD JP":   ["ci_app_cadjp_ny_prd_01", "ci_app_cadjp_ny_prd_02",
+                     "ci_app_cadjp_ny_dr_01",  "ci_app_cadjp_sg_prd_01",
+                     "ci_app_cadjp_nonprod_01"],
+        "RCL":      ["ci_app_rcl_in_prd_01", "ci_app_rcl_in_prd_02",
+                     "ci_app_rcl_in_dr_01",  "ci_app_rcl_de_prd_01",
+                     "ci_app_rcl_nonprod_01"],
+    }
+
     # ── Lookup methods ─────────────────────────────────────────
 
     def get_change(self, chg_number: str) -> dict:
@@ -608,17 +850,39 @@ class MockServiceNowData:
         return record
 
     def get_ci_by_id(self, sys_id: str) -> dict:
-        return self.CIS.get(sys_id, {
+        # Check main CIs first, then app CIs
+        record = self.CIS.get(sys_id) or self.APP_CIS.get(sys_id)
+        if record:
+            return record
+        return {
             "sys_id": sys_id, "name": f"mock-ci-{sys_id[:8]}",
             "sys_class_name": "cmdb_ci_server", "environment": "Production",
             "operational_status": "1", "u_tier": "Tier-2", "u_business_service": "Unknown",
-        })
+        }
 
     def get_ci_relationships(self, ci_sys_id: str) -> list:
-        return self.RELATIONSHIPS.get(ci_sys_id, [])
+        # Check main relationships first, then app relationships
+        return (self.RELATIONSHIPS.get(ci_sys_id)
+                or self.APP_CI_RELATIONSHIPS.get(ci_sys_id)
+                or [])
 
     def get_maintenance_windows(self, ci_sys_id: str) -> list:
         return self.MAINTENANCE.get(ci_sys_id, [])
+
+    def get_app_cis(self, app_name: str) -> list:
+        """
+        Return all CIs for a given application name (e.g. 'RSP', 'UK-Axiom').
+        Useful for answering 'is PROD impacted for RSP?'
+        """
+        key      = app_name.upper().replace("-", " ").replace(" ", "-")
+        synonyms = {
+            "UK-AXIOM": "UK-AXIOM", "UKAXIOM": "UK-AXIOM",
+            "CAD-JP": "CAD JP",     "CADJP": "CAD JP",
+            "RSP": "RSP", "SRC": "SRC", "RCL": "RCL",
+        }
+        lookup_key = synonyms.get(key, app_name.upper())
+        sys_ids    = self.APP_INDEX.get(lookup_key, [])
+        return [self.APP_CIS[sid] for sid in sys_ids if sid in self.APP_CIS]
 
 
 # ══════════════════════════════════════════════════════════════
