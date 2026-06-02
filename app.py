@@ -121,12 +121,15 @@ def load_report_by_chg(chg_number: str) -> dict | None:
         return None
     for f in sorted(os.listdir("reports"), reverse=True):
         if chg_number.upper() in f.upper() and f.endswith(".json"):
+            # FIX #3: tightened from bare `except Exception` to specific
+            # exceptions + a visible warning so corrupt files don't silently
+            # swallow an IOError or UnicodeDecodeError.
             try:
                 with open(f"reports/{f}") as fp:
                     print(f"[App] Loaded saved report: {f}")
                     return json.load(fp)
-            except Exception as e:
-                print(f"[App] Failed to read {f}: {e}")
+            except (OSError, json.JSONDecodeError) as e:
+                print(f"[App] Failed to read {f}: {type(e).__name__}: {e}")
     return None
 
 
@@ -312,7 +315,7 @@ def run_analysis(chg_number: str, placeholder) -> dict | None:
 # ══════════════════════════════════════════════════════════════
 def _needs_rag(question: str) -> bool:
     """
-    Change 3: Only hit RAG when user explicitly asks about history/past/similar.
+    Only hit RAG when user explicitly asks about history/past/similar.
     Saves free-tier quota — no RAG on first load or simple factual questions.
     """
     from config import RAG_TRIGGER_KEYWORDS
@@ -322,7 +325,7 @@ def _needs_rag(question: str) -> bool:
 
 def _needs_app_lookup(question: str) -> str | None:
     """
-    Change 2: Detect app-specific questions like 'is PROD impacted for RSP?'
+    Detect app-specific questions like 'is PROD impacted for RSP?'
     Returns the app name if detected, else None.
     """
     APPS = ["RSP", "UK-AXIOM", "UK AXIOM", "UKAXIOM", "SRC", "CAD JP", "CADJP", "RCL"]
@@ -335,7 +338,7 @@ def _needs_app_lookup(question: str) -> str | None:
 
 def _app_ci_context(app_name: str, report: dict = None) -> str:
     """
-    Change 2: Pull app CIs and cross-reference with the current report's CIs.
+    Pull app CIs and cross-reference with the current report's CIs.
     Gives the LLM a definitive YES/NO per environment — no guessing.
     """
     from integrations.servicenow_client import ServiceNowClient
@@ -410,9 +413,10 @@ def build_quick_summary(report: dict) -> str:
     """
     Build a concise structured summary from report data — no LLM call.
     Downtime is calculated from actual start/end times, not the LLM estimate.
-    The LLM is then called ONCE to give a rich description — this is the
-    only LLM call on first load.
     """
+    # FIX #2: removed ~70 lines of dead code that were trapped after the
+    # `return` statement below.  That block was an old draft of the chat
+    # logic that could never execute; the real ask_llm() is defined below.
     change  = report.get("change",     {})
     impact  = report.get("impact",     {})
     summary = report.get("ci_summary", {})
@@ -490,71 +494,6 @@ def build_quick_summary(report: dict) -> str:
     lines += ["", "---", "💬 Ask me anything about this change."]
 
     return "\n".join(lines)
-    """
-    Change 1: No RAG on first load — only fetch RAG when user asks about history/past/similar.
-    Change 2: Inject app-specific CI context when question mentions RSP/UK-Axiom/SRC/CAD JP/RCL.
-    Change 3: Rate-limited, token-capped, RAG keyword-gated to minimise free-tier usage.
-    """
-    import time
-    llm     = get_llm()
-    context = report_to_context(report)
-
-    # Change 3: RAG only on explicit history/similar keywords
-    historical_context = ""
-    if _needs_rag(user_question):
-        try:
-            historical_context = get_rag().retrieve(report)
-            print(f"[App] RAG triggered by keyword in: {user_question[:60]}")
-        except Exception as e:
-            historical_context = ""
-            print(f"[App] RAG error: {e}")
-    else:
-        print(f"[App] RAG skipped — no history keyword detected")
-
-    # Change 2: App-specific CI context injection
-    app_context = ""
-    detected_app = _needs_app_lookup(user_question)
-    if detected_app:
-        app_context = _app_ci_context(detected_app)
-        print(f"[App] App CI context injected for: {detected_app}")
-
-    # Build system prompt
-    rag_section = (
-        f"\n=== HISTORICAL SIMILAR CHANGES ===\n{historical_context}"
-        if historical_context else ""
-    )
-    app_section = app_context  # already formatted with header
-
-    system_prompt = (
-        "You are FlowMaster Copilot, an expert IT Change Management assistant at HCLTech.\n"
-        "Answer questions about the change report below. Be concise and professional.\n"
-        "Use bullet points for lists. Bold key numbers. Never invent data.\n"
-        "If asked about an application (RSP/UK-Axiom/SRC/CAD JP/RCL), use the APPLICATION section below.\n\n"
-        f"=== CURRENT CHANGE REPORT ===\n{context}"
-        f"{app_section}"
-        f"{rag_section}"
-    )
-
-    messages = [SystemMessage(content=system_prompt)]
-
-    for turn in st.session_state.chat_history[-4:]:
-        messages.append(HumanMessage(content=turn["q"]))
-        messages.append(AIMessage(content=turn["a"]))
-
-    messages.append(HumanMessage(content=user_question))
-
-    if LLM_CALL_DELAY_SEC > 0:
-        time.sleep(LLM_CALL_DELAY_SEC)
-
-    try:
-        response = llm.invoke(messages)
-        answer   = response.content.strip()
-    except Exception as e:
-        print(f"[App] Gemini call failed: {e}")
-        answer = f"⚠️ LLM error: {type(e).__name__}: {e}"
-
-    st.session_state.chat_history.append({"q": user_question, "a": answer})
-    return answer
 
 
 # ══════════════════════════════════════════════════════════════
@@ -562,15 +501,16 @@ def build_quick_summary(report: dict) -> str:
 # ══════════════════════════════════════════════════════════════
 def ask_llm(user_question: str, report: dict) -> str:
     """
-    Change 1: No RAG on first load — only fetch RAG when user asks about history/past/similar.
-    Change 2: Inject app-specific CI context when question mentions RSP/UK-Axiom/SRC/CAD JP/RCL.
-    Change 3: Rate-limited, token-capped, RAG keyword-gated to minimise free-tier usage.
+    Route a free-text question to Gemini with the full report as context.
+    - No RAG on first load — only fetch when user asks about history/past/similar.
+    - Inject app-specific CI context when question mentions RSP/UK-Axiom/SRC/CAD JP/RCL.
+    - Rate-limited, token-capped, RAG keyword-gated to minimise free-tier usage.
     """
     import time
     llm     = get_llm()
     context = report_to_context(report)
 
-    # Change 3: RAG only on explicit history/similar keywords
+    # RAG only on explicit history/similar keywords
     historical_context = ""
     if _needs_rag(user_question):
         try:
@@ -582,7 +522,7 @@ def ask_llm(user_question: str, report: dict) -> str:
     else:
         print(f"[App] RAG skipped — no history keyword detected")
 
-    # Change 2: App-specific CI context injection
+    # App-specific CI context injection
     app_context  = ""
     detected_app = _needs_app_lookup(user_question)
     if detected_app:
@@ -649,7 +589,6 @@ def handle_input(user_input: str) -> str:
             st.session_state.report       = report
             st.session_state.chat_history = []
             print(f"[App] Loaded saved report for {chg_number} — using quick summary (no LLM)")
-            # Change 1: no LLM on first load — just render the report data directly
             return build_quick_summary(report)
 
         # ── No saved report — run full pipeline ───────────────
@@ -668,7 +607,6 @@ def handle_input(user_input: str) -> str:
 
         st.session_state.report       = report
         st.session_state.chat_history = []
-        # Change 1: no LLM on first load even for fresh pipeline — use quick summary
         return build_quick_summary(report)
 
     # ── Normal question — report loaded ───────────────────────
